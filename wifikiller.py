@@ -1139,17 +1139,22 @@ class WifiKiller:
                 safe_essid = re.sub(r'[^\w\-.]', '_', target.essid)
                 hc_file = str(Path(HASHCAT_DIR) / f"{safe_essid}_{target.bssid.replace(':', '')}.hc22000")
 
-                convert_cmd = f"hcxpcapngtool -o {hc_file} {target.handshake_file}"
+                # Enhanced command with -E (to ignore some errors) and -o for output
+                # We also redirect stderr to see what's wrong
+                convert_cmd = f"hcxpcapngtool -o \"{hc_file}\" \"{target.handshake_file}\" -E"
                 ret, stdout, stderr = run_cmd(convert_cmd)
 
-                if ret == 0 and os.path.exists(hc_file) and os.path.getsize(hc_file) > 0:
+                # Check if file was created and is not empty
+                if os.path.exists(hc_file) and os.path.getsize(hc_file) > 0:
                     target.hc22000_file = hc_file
                     converted += 1
                     console.print(f"  [{STYLE_SUCCESS}]✔[/{STYLE_SUCCESS}] {target.essid} → [bright_cyan]{hc_file}[/bright_cyan]")
                 else:
                     console.print(f"  [{STYLE_ERROR}]✘[/{STYLE_ERROR}] {target.essid} - Échec de conversion")
-                    if stderr:
-                        console.print(f"    [{STYLE_DIM}]{stderr.strip()[:100]}[/{STYLE_DIM}]")
+                    if "handshake" in (stdout + stderr).lower():
+                        console.print(f"    [{STYLE_DIM}]Note: hcxpcapngtool n'a pas pu extraire de hash valide malgré la capture.[/{STYLE_DIM}]")
+                    elif stderr:
+                        console.print(f"    [{STYLE_DIM}]Erreur: {stderr.strip()[:150]}[/{STYLE_DIM}]")
 
                 progress.advance(task)
 
