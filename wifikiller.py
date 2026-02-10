@@ -450,22 +450,22 @@ class WifiKiller:
     def _parse_scan_csv(self):
         """Parse the airodump-ng CSV output file."""
         csv_file = f"{SCAN_OUTPUT_PREFIX}-01.csv"
-        networks = []
-        clients = []
 
         if not os.path.exists(csv_file):
-            return networks, clients
+            return [], []
 
         try:
             with open(csv_file, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
         except IOError:
-            return networks, clients
+            return [], []
 
         # Split into AP section and client section
         sections = content.split("Station MAC")
 
-        # Parse APs
+        # ── Parse APs (deduplicate by BSSID, keep strongest signal) ──
+        seen_bssids = {}  # bssid -> Network (keeps the one with best power)
+
         if len(sections) >= 1:
             ap_section = sections[0]
             lines = ap_section.strip().splitlines()
@@ -495,10 +495,24 @@ class WifiKiller:
                     if power_int == -1:
                         continue
 
-                    net = Network(bssid, channel, power, encryption, cipher, auth, essid)
-                    networks.append(net)
+                    bssid_upper = bssid.strip().upper()
 
-        # Parse Clients
+                    # Deduplicate: keep the entry with the strongest signal
+                    if bssid_upper in seen_bssids:
+                        existing = seen_bssids[bssid_upper]
+                        if power_int > existing.power:
+                            seen_bssids[bssid_upper] = Network(bssid, channel, power, encryption, cipher, auth, essid)
+                        # If the existing one had a hidden ESSID but this one doesn't, update ESSID
+                        elif essid.strip() and existing.essid == "<Hidden>":
+                            existing.essid = essid.strip()
+                    else:
+                        seen_bssids[bssid_upper] = Network(bssid, channel, power, encryption, cipher, auth, essid)
+
+        networks = list(seen_bssids.values())
+
+        # ── Parse Clients (deduplicate by station MAC) ──
+        seen_clients = {}  # station_mac -> Client
+
         if len(sections) >= 2:
             client_section = "Station MAC" + sections[1]
             lines = client_section.strip().splitlines()
@@ -516,8 +530,11 @@ class WifiKiller:
                     bssid = parts[5].strip() if len(parts) > 5 else ""
                     if not re.match(r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$', station):
                         continue
-                    client = Client(station, bssid)
-                    clients.append(client)
+                    station_upper = station.strip().upper()
+                    if station_upper not in seen_clients:
+                        seen_clients[station_upper] = Client(station, bssid)
+
+        clients = list(seen_clients.values())
 
         return networks, clients
 
