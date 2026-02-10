@@ -540,15 +540,53 @@ class WifiKiller:
 
     def _build_scan_table(self, networks, clients, elapsed):
         """Build a rich table for the live scan display."""
-        # Count clients per AP
-        client_count = {}
-        for c in clients:
-            if c.bssid and c.bssid != "(not associated)":
-                bssid_upper = c.bssid.upper()
-                client_count[bssid_upper] = client_count.get(bssid_upper, 0) + 1
-
-        # Sort by power (strongest first)
-        sorted_nets = sorted(networks, key=lambda n: n.power, reverse=True)
+        
+        # Prepare data based on mode
+        grouped_networks = []
+        if self.args.group:
+            # Grouping logic for live view
+            groups = {}
+            for net in networks:
+                # Count clients for this specific BSSID
+                n_clients = 0
+                for c in clients:
+                    if c.bssid and c.bssid.upper() == net.bssid.upper():
+                        n_clients += 1
+                
+                key = net.essid
+                if key not in groups:
+                    groups[key] = {
+                        'essid': key,
+                        'count': 0,
+                        'channels': set(),
+                        'power': -100,
+                        'encryption': set(),
+                        'cipher': set(),
+                        'clients': 0
+                    }
+                g = groups[key]
+                g['count'] += 1
+                g['channels'].add(net.channel)
+                if net.power > g['power']:
+                    g['power'] = net.power
+                g['encryption'].add(net.encryption)
+                g['cipher'].add(net.cipher)
+                g['clients'] += n_clients
+            
+            # Sort groups by power
+            grouped_networks = sorted(groups.values(), key=lambda x: x['power'], reverse=True)
+            display_list = grouped_networks
+        else:
+            # Standard logic
+            # Calculate clients per AP
+            client_count = {}
+            for c in clients:
+                if c.bssid and c.bssid != "(not associated)":
+                    bssid_upper = c.bssid.upper()
+                    client_count[bssid_upper] = client_count.get(bssid_upper, 0) + 1
+            
+            sorted_nets = sorted(networks, key=lambda n: n.power, reverse=True)
+            display_list = sorted_nets
 
         table = Table(
             box=box.HEAVY_EDGE,
@@ -561,30 +599,59 @@ class WifiKiller:
 
         table.add_column("#", style="bright_yellow", justify="center", width=4)
         table.add_column("ESSID", style="bright_white", min_width=15, max_width=30)
-        table.add_column("BSSID", style="dim cyan", width=19)
-        table.add_column("CH", style="bright_yellow", justify="center", width=4)
+        
+        if self.args.group:
+            table.add_column("APs", justify="center", width=4)
+            table.add_column("CH", style="bright_yellow", justify="center", width=10)
+        else:
+            table.add_column("BSSID", style="dim cyan", width=19)
+            table.add_column("CH", style="bright_yellow", justify="center", width=4)
+            
         table.add_column("PWR", justify="center", width=5)
         table.add_column("Signal", justify="center", width=8)
         table.add_column("ENC", justify="center", width=10)
         table.add_column("CIPHER", style="dim", justify="center", width=8)
         table.add_column("Clients", style="bright_green", justify="center", width=8)
 
-        for i, net in enumerate(sorted_nets, 1):
-            n_clients = client_count.get(net.bssid.upper(), 0)
-            client_str = f"[bright_green]{n_clients}[/bright_green]" if n_clients > 0 else "[dim]0[/dim]"
-            pwr_str = f"[{'bright_green' if net.power >= -60 else 'yellow' if net.power >= -75 else 'red'}]{net.power}[/{'bright_green' if net.power >= -60 else 'yellow' if net.power >= -75 else 'red'}]"
+        for i, item in enumerate(display_list, 1):
+            if self.args.group:
+                # Item is a dict from grouping
+                essid = item['essid']
+                count = str(item['count'])
+                channels = ",".join(sorted(list(set(item['channels'])), key=lambda x: int(x) if x.isdigit() else 0))
+                if len(channels) > 10: channels = channels[:8] + ".."
+                power = item['power']
+                enc_str = "/".join(sorted(list(item['encryption'])))[:10]
+                cipher_str = "/".join(sorted(list(item['cipher'])))[:8]
+                clients_count = item['clients']
+            else:
+                # Item is Network object
+                essid = item.essid
+                bssid = item.bssid # Used below, but we need to adapt the row
+                count = "-"
+                channels = item.channel
+                power = item.power
+                enc_str = item.encryption
+                cipher_str = item.cipher
+                clients_count = client_count.get(item.bssid.upper(), 0)
 
-            table.add_row(
-                str(i),
-                net.essid,
-                net.bssid,
-                net.channel,
+            client_str = f"[bright_green]{clients_count}[/bright_green]" if clients_count > 0 else "[dim]0[/dim]"
+            pwr_str = f"[{'bright_green' if power >= -60 else 'yellow' if power >= -75 else 'red'}]{power}[/{'bright_green' if power >= -60 else 'yellow' if power >= -75 else 'red'}]"
+
+            row_data = [str(i), essid]
+            if self.args.group:
+                row_data.extend([count, channels])
+            else:
+                row_data.extend([item.bssid, channels])
+            
+            row_data.extend([
                 pwr_str,
-                get_signal_bars(net.power),
-                get_encryption_style(net.encryption),
-                net.cipher,
+                get_signal_bars(power),
+                get_encryption_style(enc_str),
+                cipher_str,
                 client_str,
-            )
+            ])
+            table.add_row(*row_data)
 
         # Header panel
         scan_info = Text.assemble(
@@ -592,7 +659,7 @@ class WifiKiller:
             ("  │  ", "dim"),
             (f"Interface: {self.monitor_interface}", "bright_white"),
             ("  │  ", "dim"),
-            (f"Réseaux: {len(sorted_nets)}", "bright_green"),
+            (f"Réseaux: {len(display_list)}", "bright_green"),
             ("  │  ", "dim"),
             (f"Clients: {len(clients)}", "bright_yellow"),
             ("  │  ", "dim"),
@@ -686,6 +753,44 @@ class WifiKiller:
     #  STEP 4: DISPLAY RESULTS & SELECT TARGETS
     # ────────────────────────────────────────────────────────────
 
+    # ────────────────────────────────────────────────────────────
+    #  STEP 4: DISPLAY RESULTS & SELECT TARGETS (MODIFIED FOR GROUPING)
+    # ────────────────────────────────────────────────────────────
+
+    def _group_networks(self, networks):
+        """Helper to group networks by ESSID."""
+        groups = {}
+        for net in networks:
+            # Update net.clients if not already set (re-calculate from self.clients list done in scan_networks)
+            # stored in the group
+            
+            key = net.essid
+            if key not in groups:
+                groups[key] = {
+                    'essid': key,
+                    'bssids': [],
+                    'networks': [],
+                    'channels': set(),
+                    'power': -100,
+                    'encryption': set(),
+                    'cipher': set(),
+                    'auth': set(),
+                    'clients': 0
+                }
+            g = groups[key]
+            g['networks'].append(net)
+            g['bssids'].append(net.bssid)
+            g['channels'].add(net.channel)
+            if net.power > g['power']:
+                g['power'] = net.power
+            g['encryption'].add(net.encryption)
+            g['cipher'].add(net.cipher)
+            g['auth'].add(net.auth)
+            g['clients'] += net.clients
+        
+        # Convert to list sorted by power
+        return sorted(groups.values(), key=lambda x: x['power'], reverse=True)
+
     def display_and_select_targets(self):
         """Display scanned networks and let user select targets."""
         console.print(f"[{STYLE_HEADER}]━━━ ÉTAPE 5/6 : Sélection des cibles ━━━[/{STYLE_HEADER}]\n")
@@ -695,9 +800,16 @@ class WifiKiller:
             self.cleanup()
             sys.exit(1)
 
+        # Handle Grouped Mode vs Normal Mode
+        display_items = []
+        if self.args.group:
+            display_items = self._group_networks(self.networks)
+        else:
+            display_items = self.networks
+
         # Build results table
         table = Table(
-            title="📡 Réseaux Wi-Fi détectés",
+            title=f"📡 Réseaux Wi-Fi détectés ({'GROUPÉS' if self.args.group else 'DÉTAILLÉS'})",
             box=box.DOUBLE_EDGE,
             border_style="bright_cyan",
             title_style="bold bright_cyan",
@@ -705,10 +817,17 @@ class WifiKiller:
             row_styles=["", "on grey7"],
             expand=True,
         )
+        
         table.add_column("#", style="bright_yellow", justify="center", width=4)
         table.add_column("ESSID", style="bright_white", min_width=12, max_width=28)
-        table.add_column("BSSID", style="dim cyan", width=19)
-        table.add_column("CH", style="bright_yellow", justify="center", width=4)
+        
+        if self.args.group:
+            table.add_column("APs", justify="center", width=4)
+            table.add_column("CH", style="bright_yellow", justify="center", width=10)
+        else:
+            table.add_column("BSSID", style="dim cyan", width=19)
+            table.add_column("CH", style="bright_yellow", justify="center", width=4)
+            
         table.add_column("PWR", justify="center", width=5)
         table.add_column("Signal", justify="center", width=8)
         table.add_column("ENC", justify="center", width=10)
@@ -716,23 +835,54 @@ class WifiKiller:
         table.add_column("AUTH", style="dim", justify="center", width=6)
         table.add_column("Clients", style="bright_green", justify="center", width=8)
 
-        for i, net in enumerate(self.networks, 1):
-            client_str = f"[bright_green]{net.clients}[/bright_green]" if net.clients > 0 else "[dim]0[/dim]"
-            pwr_color = 'bright_green' if net.power >= -60 else 'yellow' if net.power >= -75 else 'red'
-            pwr_str = f"[{pwr_color}]{net.power}[/{pwr_color}]"
+        for i, item in enumerate(display_items, 1):
+            if self.args.group:
+                # Group Item
+                essid = item['essid']
+                count = str(len(item['networks']))
+                channels = ",".join(sorted(list(set(item['channels'])), key=lambda x: int(x) if x.isdigit() else 0))
+                if len(channels) > 10: channels = channels[:8] + ".."
+                power = item['power']
+                enc_str = "/".join(sorted(list(item['encryption'])))[:10]
+                cipher_str = "/".join(sorted(list(item['cipher'])))[:8]
+                auth_str = "/".join(sorted(list(item['auth'])))[:6]
+                clients_count = item['clients']
+            else:
+                # Network Item
+                essid = item.essid
+                bssid = item.bssid
+                count = "-"
+                channels = item.channel
+                power = item.power
+                enc_str = item.encryption
+                cipher_str = item.cipher
+                auth_str = item.auth
+                clients_count = item.clients
 
-            table.add_row(
+            client_str = f"[bright_green]{clients_count}[/bright_green]" if clients_count > 0 else "[dim]0[/dim]"
+            pwr_color = 'bright_green' if power >= -60 else 'yellow' if power >= -75 else 'red'
+            pwr_str = f"[{pwr_color}]{power}[/{pwr_color}]"
+
+            row_data = [
                 str(i),
-                net.essid,
-                net.bssid,
-                net.channel,
+                essid,
+            ]
+            
+            if self.args.group:
+                row_data.extend([count, channels])
+            else:
+                row_data.extend([bssid, channels])
+                
+            row_data.extend([
                 pwr_str,
-                get_signal_bars(net.power),
-                get_encryption_style(net.encryption),
-                net.cipher,
-                net.auth,
+                get_signal_bars(power),
+                get_encryption_style(enc_str),
+                cipher_str,
+                auth_str,
                 client_str,
-            )
+            ])
+            
+            table.add_row(*row_data)
 
         console.print(table)
         console.print()
@@ -759,42 +909,58 @@ class WifiKiller:
                 sys.exit(0)
 
             if choice == 'all':
-                selected = list(range(len(self.networks)))
+                selected_indices = list(range(len(display_items)))
                 break
 
             # Parse selection
             try:
-                selected = []
+                selected_indices = []
                 for part in choice.split(','):
                     part = part.strip()
                     if '-' in part:
                         start, end = part.split('-', 1)
                         start, end = int(start.strip()), int(end.strip())
-                        if start < 1 or end > len(self.networks) or start > end:
+                        if start < 1 or end > len(display_items) or start > end:
                             raise ValueError
-                        selected.extend(range(start - 1, end))
+                        selected_indices.extend(range(start - 1, end))
                     else:
                         num = int(part)
-                        if num < 1 or num > len(self.networks):
+                        if num < 1 or num > len(display_items):
                             raise ValueError
-                        selected.append(num - 1)
+                        selected_indices.append(num - 1)
 
                 # Deduplicate
-                selected = list(dict.fromkeys(selected))
+                selected_indices = list(dict.fromkeys(selected_indices))
                 break
             except (ValueError, IndexError):
                 console.print(f"[{STYLE_ERROR}]Entrée invalide. Essaye encore.[/{STYLE_ERROR}]")
 
-        targets = [self.networks[i] for i in selected]
-        console.print(f"\n[{STYLE_SUCCESS}]✔ {len(targets)} réseau(x) sélectionné(s) pour l'attaque.[/{STYLE_SUCCESS}]")
-        for t in targets:
-            console.print(f"  [bright_cyan]►[/bright_cyan] {t.essid} ({t.bssid}) - CH {t.channel}")
+        # Convert selection to actual targets list
+        final_targets = []
+        for idx in selected_indices:
+            item = display_items[idx]
+            if self.args.group:
+                # Add all networks from the group
+                final_targets.extend(item['networks'])
+            else:
+                final_targets.append(item)
+
+        targets = final_targets
+        console.print(f"\n[{STYLE_SUCCESS}]✔ {len(targets)} réseau(x) sélectionné(s) pour l'attaque (Total APs).[/{STYLE_SUCCESS}]")
+        
+        # Show summary of targets
+        unique_essids = list(set([t.essid for t in targets]))
+        for essid in unique_essids[:10]:
+             console.print(f"  [bright_cyan]►[/bright_cyan] {essid}")
+        if len(unique_essids) > 10:
+            console.print(f"  [dim]... et {len(unique_essids)-10} autres[/dim]")
 
         return targets
 
     # ────────────────────────────────────────────────────────────
     #  STEP 5: DEAUTH ATTACK & HANDSHAKE CAPTURE
     # ────────────────────────────────────────────────────────────
+
 
     def _check_handshake(self, cap_file, bssid):
         """Check if a valid handshake exists in the capture file."""
@@ -1164,6 +1330,8 @@ Exemples:
                         help=f"Nombre de rounds de deauth (défaut: {DEAUTH_ROUNDS})")
     parser.add_argument("--timeout", type=int, default=HANDSHAKE_TIMEOUT,
                         help=f"Timeout en secondes pour la capture du handshake (défaut: {HANDSHAKE_TIMEOUT}s)")
+    parser.add_argument("-g", "--group", action="store_true",
+                        help="Grouper les réseaux par ESSID (masque les doublons d'AP)")
     parser.add_argument("--no-confirm", action="store_true",
                         help="Ne pas demander de confirmation avant l'attaque")
     parser.add_argument("-v", "--version", action="version", version=f"WifiKiller v{VERSION}")
