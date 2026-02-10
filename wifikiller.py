@@ -1139,22 +1139,30 @@ class WifiKiller:
                 safe_essid = re.sub(r'[^\w\-.]', '_', target.essid)
                 hc_file = str(Path(HASHCAT_DIR) / f"{safe_essid}_{target.bssid.replace(':', '')}.hc22000")
 
-                # Enhanced command with -E (to ignore some errors) and -o for output
-                # We also redirect stderr to see what's wrong
-                convert_cmd = f"hcxpcapngtool -o \"{hc_file}\" \"{target.handshake_file}\" -E"
+                # On simplifie la commande au maximum pour coller à ton test
+                # On enlève -E au début pour voir, et on capture absolument TOUT
+                convert_cmd = f"hcxpcapngtool -o \"{hc_file}\" \"{target.handshake_file}\""
+                
                 ret, stdout, stderr = run_cmd(convert_cmd)
+                output = (stdout + stderr).strip()
 
-                # Check if file was created and is not empty
+                # Vérification du succès
                 if os.path.exists(hc_file) and os.path.getsize(hc_file) > 0:
                     target.hc22000_file = hc_file
                     converted += 1
                     console.print(f"  [{STYLE_SUCCESS}]✔[/{STYLE_SUCCESS}] {target.essid} → [bright_cyan]{hc_file}[/bright_cyan]")
                 else:
                     console.print(f"  [{STYLE_ERROR}]✘[/{STYLE_ERROR}] {target.essid} - Échec de conversion")
-                    if "handshake" in (stdout + stderr).lower():
-                        console.print(f"    [{STYLE_DIM}]Note: hcxpcapngtool n'a pas pu extraire de hash valide malgré la capture.[/{STYLE_DIM}]")
-                    elif stderr:
-                        console.print(f"    [{STYLE_DIM}]Erreur: {stderr.strip()[:150]}[/{STYLE_DIM}]")
+                    
+                    # Diagnostic détaillé
+                    if output:
+                        # Si l'outil dit qu'il n'y a pas de handshake, on explique pourquoi
+                        if "0 handshake(s) written to" in output or "no hashes written" in output.lower():
+                             console.print(f"    [{STYLE_DIM}]Note: Le fichier .cap ne contient pas de handshake complet (EAPOL 4-way) valide pour Hashcat.[/{STYLE_DIM}]")
+                        else:
+                             console.print(f"    [{STYLE_DIM}]Sortie d'erreur : {output[:200]}...[/{STYLE_DIM}]")
+                    else:
+                        console.print(f"    [{STYLE_DIM}]L'outil hcxpcapngtool n'a produit aucun résultat (probablement pas de hash valide dans la capture).[/{STYLE_DIM}]")
 
                 progress.advance(task)
 
